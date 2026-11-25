@@ -2,3 +2,5 @@
 __pycache__/
 results/daily_returns.csv
 .DS_Store
+node_modules/
+web/dist/

@@ -1,14 +1,34 @@
+from datetime import date
+
 import pandas as pd
 import yfinance as yf
 
 TRADING_DAYS = 252
 
 
+_PRICE_CACHE: dict[tuple, pd.DataFrame] = {}
+
+
+def download_close(tickers: list[str], start, end=None) -> pd.DataFrame:
+    """Download closing prices, reusing any successful download from earlier today."""
+    key = (tuple(tickers), str(start)[:10], end, date.today())
+    if key not in _PRICE_CACHE:
+        raw = yf.download(list(tickers), start=key[1], end=end, auto_adjust=True, progress=False)
+        if raw.empty:
+            return pd.DataFrame(columns=list(tickers), dtype=float)
+        close = raw["Close"]
+        close = close.to_frame(tickers[0]) if isinstance(close, pd.Series) else close
+        if close.empty or close.isna().all().any():
+            return close  # don't cache failed or partial downloads
+        _PRICE_CACHE[key] = close
+    return _PRICE_CACHE[key].copy()
+
+
 def fetch_prices(tickers: list[str], start: str, end: str | None = None) -> pd.DataFrame:
-    raw = yf.download(tickers, start=start, end=end, auto_adjust=True, progress=False)
-    prices = raw["Close"]
-    if isinstance(prices, pd.Series):
-        prices = prices.to_frame(tickers[0])
+    prices = download_close(tickers, start, end)
+    missing = [t for t in tickers if t not in prices.columns or prices[t].isna().all()]
+    if missing:
+        raise ValueError(f"No price data found for: {', '.join(missing)}")
     prices = prices[tickers].dropna(how="all")
     first_dates = prices.apply(lambda s: s.first_valid_index())
     latest = first_dates.max()
@@ -27,7 +47,9 @@ def annualized_stats(returns: pd.DataFrame) -> pd.DataFrame:
         "ann_vol": returns.std() * TRADING_DAYS ** 0.5,
     })
 
+
 def fetch_risk_free(index: pd.DatetimeIndex) -> pd.Series:
-    raw = yf.download("^IRX", start=index[0], auto_adjust=True, progress=False)["Close"]
-    rate = raw.squeeze() / 100
+    rate = download_close(["^IRX"], index[0])["^IRX"].dropna() / 100
+    if rate.empty:
+        raise ValueError("Couldn't load T-bill rates from Yahoo Finance. Try again in a minute.")
     return rate.reindex(index).ffill().bfill()
